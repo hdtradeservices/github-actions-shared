@@ -1,0 +1,47 @@
+name: Test Reusable Workflows
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+jobs:
+  test-pr-validation:
+    uses: ./.github/workflows/pr-validation.yml
+    secrets: inherit
+
+  test-scripts:
+    name: Test Validation Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test commit format script
+        run: |
+          export GITHUB_BASE_REF=main
+          ./scripts/commit-format-check.sh
+
+      - name: Test commit length script
+        run: |
+          export GITHUB_BASE_REF=main
+          ./scripts/commit-length-check.sh
+
+      - name: Test fixup script
+        run: |
+          export GITHUB_BASE_REF=main
+          ./scripts/fixup-check.sh
+
+      - name: Validate script permissions
+        run: |
+          ls -la scripts/
+          for script in scripts/*.sh; do
+            if [[ ! -x "$script" ]]; then
+              echo "❌ Script $script is not executable"
+              exit 1
+            else
+              echo "✅ Script $script is executable"
+            fi
+          done

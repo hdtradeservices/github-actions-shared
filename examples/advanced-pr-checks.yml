@@ -1,0 +1,23 @@
+# Advanced PR Validation Workflow with Custom Configuration
+# Place this file at: .github/workflows/pr-checks.yml
+
+name: PR Validation Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  pr-validation:
+    uses: hdtradeservices/github-actions-shared/.github/workflows/pr-validation.yml@main
+    with:
+      # Custom commit format for this repository
+      commit-format-regex: '^(feat|fix|docs|style|refactor|test|chore|breaking)(\([^\)]+\))?:'
+      # Longer commit messages allowed for documentation repositories
+      max-commit-length: 100
+      # Skip fixup check for development repositories
+      skip-fixup-check: false
+      # All other checks enabled
+      skip-format-check: false
+      skip-length-check: false
+    secrets: inherit

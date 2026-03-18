@@ -1,0 +1,234 @@
+name: PR Validation Checks
+
+on:
+  workflow_call:
+    inputs:
+      commit-format-regex:
+        description: 'Regex pattern for validating commit message format'
+        type: string
+        default: '^(feat|fix|docs|style|refactor|test|chore)(\([^\)]+\))?:'
+      max-commit-length:
+        description: 'Maximum allowed commit message length'
+        type: number
+        default: 72
+      skip-fixup-check:
+        description: 'Skip the fixup commits check'
+        type: boolean
+        default: false
+      skip-format-check:
+        description: 'Skip the commit format check'
+        type: boolean
+        default: false
+      skip-length-check:
+        description: 'Skip the commit length check'
+        type: boolean
+        default: false
+
+jobs:
+  commit-format:
+    name: Validate Commit Format
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip-format-check }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check commit format
+        run: |
+          echo "🔍 Checking commit message format..."
+          echo "Expected pattern: ${{ inputs.commit-format-regex }}"
+          
+          # Get base branch reference
+          BASE_REF="${{ github.base_ref }}"
+          if [ -z "$BASE_REF" ]; then
+            BASE_REF="main"
+          fi
+          
+          # Check if base branch exists, fallback to origin/main
+          if ! git show-ref --verify --quiet refs/remotes/origin/$BASE_REF; then
+            echo "⚠️ Base ref origin/$BASE_REF not found, using origin/main"
+            BASE_REF="main"
+          fi
+          
+          INVALID_COMMITS=""
+          COMMIT_COUNT=0
+          
+          # Get commits in this PR
+          git log --format="%H %s" origin/$BASE_REF..HEAD | while IFS=' ' read -r hash message; do
+            if [ -n "$hash" ]; then
+              COMMIT_COUNT=$((COMMIT_COUNT + 1))
+              if ! echo "$message" | grep -qE '${{ inputs.commit-format-regex }}'; then
+                echo "❌ Invalid format: $hash - $message"
+                INVALID_COMMITS="$INVALID_COMMITS\n$hash: $message"
+              else
+                echo "✅ Valid format: $hash - $message"
+              fi
+            fi
+          done
+          
+          if [ -n "$INVALID_COMMITS" ]; then
+            echo ""
+            echo "🚫 Found commits with invalid format:"
+            echo -e "$INVALID_COMMITS"
+            echo ""
+            echo "💡 Commit messages should follow conventional commit format:"
+            echo "   feat: add new feature"
+            echo "   fix: resolve bug in component"
+            echo "   docs: update README"
+            echo "   style: fix formatting"
+            echo "   refactor: improve code structure"
+            echo "   test: add unit tests"
+            echo "   chore: update dependencies"
+            echo ""
+            echo "   Optional scope: feat(auth): add login endpoint"
+            exit 1
+          fi
+          
+          echo "✅ All commit messages follow the expected format!"
+
+  commit-length:
+    name: Validate Commit Message Length
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip-length-check }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check commit message length
+        run: |
+          echo "🔍 Checking commit message length (max: ${{ inputs.max-commit-length }} characters)..."
+          
+          # Get base branch reference
+          BASE_REF="${{ github.base_ref }}"
+          if [ -z "$BASE_REF" ]; then
+            BASE_REF="main"
+          fi
+          
+          # Check if base branch exists, fallback to origin/main
+          if ! git show-ref --verify --quiet refs/remotes/origin/$BASE_REF; then
+            echo "⚠️ Base ref origin/$BASE_REF not found, using origin/main"
+            BASE_REF="main"
+          fi
+          
+          LONG_COMMITS=""
+          COMMIT_COUNT=0
+          
+          # Get commits in this PR
+          git log --format="%H %s" origin/$BASE_REF..HEAD | while IFS=' ' read -r hash message; do
+            if [ -n "$hash" ]; then
+              COMMIT_COUNT=$((COMMIT_COUNT + 1))
+              MESSAGE_LENGTH=${#message}
+              if [ $MESSAGE_LENGTH -gt ${{ inputs.max-commit-length }} ]; then
+                echo "❌ Too long ($MESSAGE_LENGTH chars): $hash - $message"
+                LONG_COMMITS="$LONG_COMMITS\n$hash: $message ($MESSAGE_LENGTH chars)"
+              else
+                echo "✅ Good length ($MESSAGE_LENGTH chars): $hash - $message"
+              fi
+            fi
+          done
+          
+          if [ -n "$LONG_COMMITS" ]; then
+            echo ""
+            echo "🚫 Found commits with messages too long:"
+            echo -e "$LONG_COMMITS"
+            echo ""
+            echo "💡 Keep commit messages under ${{ inputs.max-commit-length }} characters for better readability."
+            exit 1
+          fi
+          
+          echo "✅ All commit messages are within the length limit!"
+
+  fixup-commits:
+    name: Check for Fixup Commits
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip-fixup-check }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for fixup commits
+        run: |
+          echo "🔍 Checking for fixup commits..."
+          
+          # Get base branch reference
+          BASE_REF="${{ github.base_ref }}"
+          if [ -z "$BASE_REF" ]; then
+            BASE_REF="main"
+          fi
+          
+          # Check if base branch exists, fallback to origin/main
+          if ! git show-ref --verify --quiet refs/remotes/origin/$BASE_REF; then
+            echo "⚠️ Base ref origin/$BASE_REF not found, using origin/main"
+            BASE_REF="main"
+          fi
+          
+          # Check for fixup commits
+          FIXUP_COMMITS=$(git log --format="%H %s" origin/$BASE_REF..HEAD | grep '^[a-f0-9]\+ fixup!')
+          
+          if [ -n "$FIXUP_COMMITS" ]; then
+            echo "🚫 Found fixup commits in this PR:"
+            echo "$FIXUP_COMMITS"
+            echo ""
+            echo "💡 Please squash fixup commits before merging:"
+            echo "   git rebase -i origin/$BASE_REF"
+            echo "   or"
+            echo "   git reset --soft origin/$BASE_REF && git commit"
+            exit 1
+          fi
+          
+          echo "✅ No fixup commits found!"
+
+  summary:
+    name: Validation Summary
+    runs-on: ubuntu-latest
+    needs: [commit-format, commit-length, fixup-commits]
+    if: always()
+    steps:
+      - name: Check overall status
+        run: |
+          echo "## PR Validation Results 📋" >> $GITHUB_STEP_SUMMARY
+          
+          # Check individual job results
+          FORMAT_STATUS="${{ needs.commit-format.result }}"
+          LENGTH_STATUS="${{ needs.commit-length.result }}"
+          FIXUP_STATUS="${{ needs.fixup-commits.result }}"
+          
+          if [ "$FORMAT_STATUS" = "skipped" ]; then
+            echo "- 🔘 Commit Format: Skipped" >> $GITHUB_STEP_SUMMARY
+          elif [ "$FORMAT_STATUS" = "success" ]; then
+            echo "- ✅ Commit Format: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ Commit Format: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "$LENGTH_STATUS" = "skipped" ]; then
+            echo "- 🔘 Commit Length: Skipped" >> $GITHUB_STEP_SUMMARY
+          elif [ "$LENGTH_STATUS" = "success" ]; then
+            echo "- ✅ Commit Length: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ Commit Length: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "$FIXUP_STATUS" = "skipped" ]; then
+            echo "- 🔘 Fixup Check: Skipped" >> $GITHUB_STEP_SUMMARY
+          elif [ "$FIXUP_STATUS" = "success" ]; then
+            echo "- ✅ Fixup Check: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ Fixup Check: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Determine overall result
+          if [ "$FORMAT_STATUS" = "failure" ] || [ "$LENGTH_STATUS" = "failure" ] || [ "$FIXUP_STATUS" = "failure" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **Overall Status: FAILED** - Please fix the issues above before merging." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Overall Status: PASSED** - All validation checks completed successfully!" >> $GITHUB_STEP_SUMMARY
+          fi

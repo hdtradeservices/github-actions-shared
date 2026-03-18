@@ -1,0 +1,13 @@
+# Basic PR Validation Workflow
+# Place this file at: .github/workflows/pr-checks.yml
+
+name: PR Validation Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  pr-validation:
+    uses: hdtradeservices/github-actions-shared/.github/workflows/pr-validation.yml@main
+    secrets: inherit
