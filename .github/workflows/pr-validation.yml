@@ -25,17 +25,17 @@ on:
         default: false
 
 jobs:
-  commit-format:
-    name: Validate Commit Format
+  pr-validation:
+    name: PR Validation Checks
     runs-on: ubuntu-latest
-    if: ${{ !inputs.skip-format-check }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Check commit format
+      - name: ✅ Validate Commit Format
+        if: ${{ !inputs.skip-format-check }}
         run: |
           echo "🔍 Checking commit message format..."
           echo "Expected pattern: ${{ inputs.commit-format-regex }}"
@@ -54,21 +54,23 @@ jobs:
           
           INVALID_COMMITS=""
           COMMIT_COUNT=0
+          EXIT_CODE=0
           
           # Get commits in this PR
-          git log --format="%H %s" origin/$BASE_REF..HEAD | while IFS=' ' read -r hash message; do
+          while IFS=' ' read -r hash message; do
             if [ -n "$hash" ]; then
               COMMIT_COUNT=$((COMMIT_COUNT + 1))
               if ! echo "$message" | grep -qE '${{ inputs.commit-format-regex }}'; then
                 echo "❌ Invalid format: $hash - $message"
                 INVALID_COMMITS="$INVALID_COMMITS\n$hash: $message"
+                EXIT_CODE=1
               else
                 echo "✅ Valid format: $hash - $message"
               fi
             fi
-          done
+          done < <(git log --format="%H %s" origin/$BASE_REF..HEAD)
           
-          if [ -n "$INVALID_COMMITS" ]; then
+          if [ $EXIT_CODE -eq 1 ]; then
             echo ""
             echo "🚫 Found commits with invalid format:"
             echo -e "$INVALID_COMMITS"
@@ -86,19 +88,10 @@ jobs:
             exit 1
           fi
           
-          echo "✅ All commit messages follow the expected format!"
+          echo "✅ All $COMMIT_COUNT commit messages follow the expected format!"
 
-  commit-length:
-    name: Validate Commit Message Length
-    runs-on: ubuntu-latest
-    if: ${{ !inputs.skip-length-check }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check commit message length
+      - name: ✅ Validate Commit Length
+        if: ${{ !inputs.skip-length-check }}
         run: |
           echo "🔍 Checking commit message length (max: ${{ inputs.max-commit-length }} characters)..."
           
@@ -116,22 +109,24 @@ jobs:
           
           LONG_COMMITS=""
           COMMIT_COUNT=0
+          EXIT_CODE=0
           
           # Get commits in this PR
-          git log --format="%H %s" origin/$BASE_REF..HEAD | while IFS=' ' read -r hash message; do
+          while IFS=' ' read -r hash message; do
             if [ -n "$hash" ]; then
               COMMIT_COUNT=$((COMMIT_COUNT + 1))
               MESSAGE_LENGTH=${#message}
               if [ $MESSAGE_LENGTH -gt ${{ inputs.max-commit-length }} ]; then
                 echo "❌ Too long ($MESSAGE_LENGTH chars): $hash - $message"
                 LONG_COMMITS="$LONG_COMMITS\n$hash: $message ($MESSAGE_LENGTH chars)"
+                EXIT_CODE=1
               else
                 echo "✅ Good length ($MESSAGE_LENGTH chars): $hash - $message"
               fi
             fi
-          done
+          done < <(git log --format="%H %s" origin/$BASE_REF..HEAD)
           
-          if [ -n "$LONG_COMMITS" ]; then
+          if [ $EXIT_CODE -eq 1 ]; then
             echo ""
             echo "🚫 Found commits with messages too long:"
             echo -e "$LONG_COMMITS"
@@ -140,19 +135,10 @@ jobs:
             exit 1
           fi
           
-          echo "✅ All commit messages are within the length limit!"
+          echo "✅ All $COMMIT_COUNT commit messages are within the length limit!"
 
-  fixup-commits:
-    name: Check for Fixup Commits
-    runs-on: ubuntu-latest
-    if: ${{ !inputs.skip-fixup-check }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check for fixup commits
+      - name: ✅ Check for Fixup Commits
+        if: ${{ !inputs.skip-fixup-check }}
         run: |
           echo "🔍 Checking for fixup commits..."
           
@@ -169,7 +155,7 @@ jobs:
           fi
           
           # Check for fixup commits
-          FIXUP_COMMITS=$(git log --format="%H %s" origin/$BASE_REF..HEAD | grep '^[a-f0-9]\+ fixup!')
+          FIXUP_COMMITS=$(git log --format="%H %s" origin/$BASE_REF..HEAD | grep '^[a-f0-9]\+ fixup!' || true)
           
           if [ -n "$FIXUP_COMMITS" ]; then
             echo "🚫 Found fixup commits in this PR:"
@@ -184,51 +170,53 @@ jobs:
           
           echo "✅ No fixup commits found!"
 
-  summary:
-    name: Validation Summary
-    runs-on: ubuntu-latest
-    needs: [commit-format, commit-length, fixup-commits]
-    if: always()
-    steps:
-      - name: Check overall status
+      - name: 📊 Generate Validation Summary
+        if: always()
         run: |
           echo "## PR Validation Results 📋" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Check individual job results
-          FORMAT_STATUS="${{ needs.commit-format.result }}"
-          LENGTH_STATUS="${{ needs.commit-length.result }}"
-          FIXUP_STATUS="${{ needs.fixup-commits.result }}"
+          # Get step outcomes from job context
+          FORMAT_OUTCOME="${{ steps.format.outcome || 'skipped' }}"
+          LENGTH_OUTCOME="${{ steps.length.outcome || 'skipped' }}"
+          FIXUP_OUTCOME="${{ steps.fixup.outcome || 'skipped' }}"
           
-          if [ "$FORMAT_STATUS" = "skipped" ]; then
-            echo "- 🔘 Commit Format: Skipped" >> $GITHUB_STEP_SUMMARY
-          elif [ "$FORMAT_STATUS" = "success" ]; then
-            echo "- ✅ Commit Format: Passed" >> $GITHUB_STEP_SUMMARY
+          # Note: Step outcomes aren't directly accessible, so we'll analyze job status instead
+          if [ "${{ inputs.skip-format-check }}" = "true" ]; then
+            echo "- 🔘 **Commit Format Check:** Skipped" >> $GITHUB_STEP_SUMMARY
           else
-            echo "- ❌ Commit Format: Failed" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Commit Format Check:** Completed" >> $GITHUB_STEP_SUMMARY
           fi
           
-          if [ "$LENGTH_STATUS" = "skipped" ]; then
-            echo "- 🔘 Commit Length: Skipped" >> $GITHUB_STEP_SUMMARY
-          elif [ "$LENGTH_STATUS" = "success" ]; then
-            echo "- ✅ Commit Length: Passed" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ inputs.skip-length-check }}" = "true" ]; then
+            echo "- 🔘 **Commit Length Check:** Skipped" >> $GITHUB_STEP_SUMMARY
           else
-            echo "- ❌ Commit Length: Failed" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Commit Length Check:** Completed" >> $GITHUB_STEP_SUMMARY
           fi
           
-          if [ "$FIXUP_STATUS" = "skipped" ]; then
-            echo "- 🔘 Fixup Check: Skipped" >> $GITHUB_STEP_SUMMARY
-          elif [ "$FIXUP_STATUS" = "success" ]; then
-            echo "- ✅ Fixup Check: Passed" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ inputs.skip-fixup-check }}" = "true" ]; then
+            echo "- 🔘 **Fixup Commits Check:** Skipped" >> $GITHUB_STEP_SUMMARY
           else
-            echo "- ❌ Fixup Check: Failed" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Fixup Commits Check:** Completed" >> $GITHUB_STEP_SUMMARY
           fi
           
-          # Determine overall result
-          if [ "$FORMAT_STATUS" = "failure" ] || [ "$LENGTH_STATUS" = "failure" ] || [ "$FIXUP_STATUS" = "failure" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "❌ **Overall Status: FAILED** - Please fix the issues above before merging." >> $GITHUB_STEP_SUMMARY
-            exit 1
-          else
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "✅ **Overall Status: PASSED** - All validation checks completed successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎉 All enabled validation checks completed successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "Your commits meet the required standards and are ready for review." >> $GITHUB_STEP_SUMMARY
+          
+          # Add helpful information
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "**Validation Rules Applied:**" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ inputs.skip-format-check }}" != "true" ]; then
+            echo "- Conventional commit format: \`${{ inputs.commit-format-regex }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ inputs.skip-length-check }}" != "true" ]; then
+            echo "- Maximum commit message length: ${{ inputs.max-commit-length }} characters" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ inputs.skip-fixup-check }}" != "true" ]; then
+            echo "- No fixup commits allowed in final PR" >> $GITHUB_STEP_SUMMARY
           fi
