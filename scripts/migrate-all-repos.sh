@@ -40,6 +40,13 @@ if ! command -v gh &> /dev/null; then
     exit 1
 fi
 
+# Check if jq is installed
+if ! command -v jq &> /dev/null; then
+    echo -e "${RED}❌ jq is not installed. Please install it first.${NC}"
+    echo "Installation: https://jqlang.github.io/jq/"
+    exit 1
+fi
+
 # Test GitHub CLI authentication
 if ! gh auth status &> /dev/null; then
     echo -e "${RED}❌ GitHub CLI is not authenticated. Please run 'gh auth login' first.${NC}"
@@ -97,19 +104,22 @@ for repo in $REPOS; do
     fi
     
     # Check if repository is archived
-    IS_ARCHIVED=$(gh api "repos/$ORG/$repo" --jq '.archived')
+    REPO_INFO=$(gh api "repos/$ORG/$repo" --jq '{archived: .archived, default_branch: .default_branch}')
+    IS_ARCHIVED=$(echo "$REPO_INFO" | jq -r '.archived')
+    DEFAULT_BRANCH=$(echo "$REPO_INFO" | jq -r '.default_branch')
+    
     if [[ "$IS_ARCHIVED" == "true" ]]; then
         echo -e "${YELLOW}📦 Repository is archived, skipping${NC}"
         SKIPPED=$((SKIPPED + 1))
         continue
     fi
     
-    # Create the workflow file
+    # Create the workflow file using the correct default branch
     if gh api "repos/$ORG/$repo/contents/$WORKFLOW_FILE" \
         --method PUT \
         --field message="$COMMIT_MESSAGE" \
         --field content="$(echo "$WORKFLOW_CONTENT" | base64)" \
-        --field branch="main" \
+        --field branch="$DEFAULT_BRANCH" \
         --silent 2>/dev/null; then
         echo -e "${GREEN}✅ Successfully added workflow${NC}"
         SUCCESSFUL=$((SUCCESSFUL + 1))
