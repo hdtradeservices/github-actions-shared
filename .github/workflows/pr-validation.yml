@@ -56,9 +56,15 @@ jobs:
           COMMIT_COUNT=0
           EXIT_CODE=0
           
-          # Get commits in this PR
+          # Get commits in this PR (excluding merge commits)
           while IFS=' ' read -r hash message; do
             if [ -n "$hash" ]; then
+              # Skip merge commits (they typically start with "Merge")
+              if echo "$message" | grep -qE '^Merge '; then
+                echo "🔀 Skipping merge commit: $hash - $message"
+                continue
+              fi
+              
               COMMIT_COUNT=$((COMMIT_COUNT + 1))
               if ! echo "$message" | grep -qE '${{ inputs.commit-format-regex }}'; then
                 echo "❌ Invalid format: $hash - $message"
