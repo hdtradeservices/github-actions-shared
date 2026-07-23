@@ -1,0 +1,134 @@
+name: Deploy MCP binary to zeus (reusable)
+
+# Reusable workflow: builds an MCP binary from the caller repo and hot-swaps it
+# onto zeus-live-buster at a stable, CI-owned path (DOPS-11). Agents always
+# connect to a current, read-only build — no stale per-dev home-dir copies. Lives
+# here once so the OS Login prune+expire fix can't drift per MCP repo (DOPS-206).
+
+on:
+  workflow_call:
+    inputs:
+      mcp-name:
+        description: "Binary / symlink name on zeus (also the make target bin/<name>)"
+        required: true
+        type: string
+      go-version:
+        description: "Go toolchain version"
+        type: string
+        default: "1.25.8"
+      zeus-keep-builds:
+        description: "How many prior builds to retain on zeus"
+        type: string
+        default: "5"
+
+concurrency:
+  # Never let two deploys race the symlink flip on the same box. github.repository
+  # resolves to the caller repo inside a reusable workflow, so each MCP repo keeps
+  # its own group.
+  group: deploy-mcp-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  deploy-mcp:
+    name: Build & hot-swap MCP binary
+    runs-on: ubuntu-latest
+    env:
+      # ---- per-repo knob: the binary / symlink name on zeus -----------------
+      MCP_NAME: ${{ inputs.mcp-name }}
+      # ----------------------------------------------------------------------
+      GO111MODULE: on
+      GOTOOLCHAIN: local
+      GOOGLE_CI_CREDENTIALS: ${{ secrets.PACKER_GOOGLE_CREDENTIALS }}
+      GOOGLE_APPLICATION_CREDENTIALS: "${{ github.workspace }}/ci-creds.json"
+      GOOGLE_CREDENTIALS: "${{ github.workspace }}/ci-creds.json"
+      # From a GitHub-hosted runner the box is only reachable via IAP; the
+      # deploy service account needs roles/iap.tunnelResourceAccessor +
+      # roles/compute.osLogin, and the IAP range 35.235.240.0/20 must be allowed
+      # to tcp:22 on the instance. See DOPS-12 for scoping this identity down.
+      # --ssh-key-expire-after keeps each auto-registered OS Login key short-lived
+      # so they can't accumulate past the 32 KiB profile cap (see prune step below).
+      ZEUS_SSH_FLAGS: "--tunnel-through-iap --ssh-key-expire-after=10m"
+      ZEUS_KEEP_BUILDS: ${{ inputs.zeus-keep-builds }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Private go modules are pulled over SSH (same as deploy.yml).
+      - name: Force SSH to github
+        run: git config --global --add url."git@github.com:".insteadOf "https://github.com/"
+      - name: Install CI SSH Key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.CI_SSH_KEY }}
+          name: id_ed25519
+          known_hosts: ${{ secrets.CI_SSH_KNOWN_HOSTS }}
+          config: |
+            HostName github.com
+            User git
+            IdentityFile ~/.ssh/id_ed25519
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go-version }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure gcloud
+        run: |
+          echo "$GOOGLE_CI_CREDENTIALS" > "$GOOGLE_APPLICATION_CREDENTIALS"
+          gcloud auth activate-service-account --key-file="$GOOGLE_APPLICATION_CREDENTIALS"
+          gcloud config set project goodkarma-420
+          gcloud config set compute/zone us-central1-a
+
+      - name: Build static binary
+        run: |
+          make                       # produces bin/${MCP_NAME} (CGO_ENABLED=0, static)
+          test -x "bin/${MCP_NAME}"
+
+      # gcloud auto-registers a fresh OS Login key on every ssh/scp and never
+      # removes them; the packer@ profile eventually exceeds OS Login's 32 KiB
+      # cap and every deploy fails with FAILED_PRECONDITION. Clear the accrued
+      # keys before deploying — the expiry flag above keeps new ones from piling
+      # back up. Runs as packer@ (authenticated in Configure gcloud), so it only
+      # touches that profile.
+      - name: Prune accrued OS Login SSH keys
+        run: |
+          gcloud compute os-login ssh-keys list --format="value(value.fingerprint)" \
+            | while read -r fp; do
+                [ -n "$fp" ] && gcloud compute os-login ssh-keys remove --key="$fp" || true
+              done
+
+      - name: Hot-swap onto zeus-live-buster
+        run: |
+          GIT_SHA="$(git rev-parse --short=8 HEAD)"
+          chmod +x scripts/deploy-zeus-mcp.sh
+          scripts/deploy-zeus-mcp.sh "${MCP_NAME}" "bin/${MCP_NAME}" "${GIT_SHA}"
+
+      - name: Notify failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          channel-id: ${{ vars.NOTIFICATION_CHANNEL }}
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":rotating_light: `${{ env.MCP_NAME }}` MCP hot-swap to *zeus-live-buster* failed (agents may be on a stale build)"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|run #${{ github.run_number }}> · <https://github.com/${{ github.repository }}/tree/${{ github.sha }}|${{ github.sha }}>"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

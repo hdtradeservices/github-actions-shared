@@ -1,0 +1,22 @@
+# MCP Deploy Workflow
+# Place this file at: .github/workflows/deploy-mcp.yml in each MCP repo.
+#
+# Builds the repo's MCP binary on merge to master and hot-swaps it onto
+# zeus-live-buster (DOPS-11). The build / OS Login prune+expire / hot-swap logic
+# is centralized in the reusable workflow, so the fix can't drift per repo
+# (DOPS-206). The caller only owns the triggers, run-name, and per-repo mcp-name.
+
+name: deploy-mcp
+run-name: Deploy ${{ github.event.repository.name }} MCP binary to zeus @ ${{ github.sha }}
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch: {}   # allow manual re-deploy / rollback reruns
+
+jobs:
+  deploy-mcp:
+    uses: hdtradeservices/github-actions-shared/.github/workflows/deploy-mcp.yml@main
+    with:
+      mcp-name: my-mcp   # the make target bin/<name> and zeus symlink name
+    secrets: inherit
