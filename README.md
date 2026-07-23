@@ -97,6 +97,50 @@ jobs:
 | `skip-format-check` | boolean | `false` | Skip commit format validation |
 | `skip-length-check` | boolean | `false` | Skip commit length validation |
 
+## 🤖 MCP Deploy (reusable workflow)
+
+`deploy-mcp.yml` builds an MCP repo's binary on merge to `master` and hot-swaps it
+onto `zeus-live-buster` at a stable, CI-owned path (DOPS-11). The build,
+`gcloud compute` deploy, and **OS Login SSH-key prune + expire** all live here once
+so the prune fix can't drift per repo (DOPS-206) — every MCP repo deploys as the
+same `packer@` service account, whose OS Login profile is capped at 32 KiB, so
+unpruned keys eventually break the whole MCP fleet's deploys at once.
+
+### Usage
+
+Add this at `.github/workflows/deploy-mcp.yml` in the MCP repo (full example in
+[`examples/deploy-mcp.yml`](examples/deploy-mcp.yml)):
+
+```yaml
+name: deploy-mcp
+run-name: Deploy ${{ github.event.repository.name }} MCP binary to zeus @ ${{ github.sha }}
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch: {}
+
+jobs:
+  deploy-mcp:
+    uses: hdtradeservices/github-actions-shared/.github/workflows/deploy-mcp.yml@main
+    with:
+      mcp-name: catalog
+    secrets: inherit
+```
+
+The reusable workflow checks out the **caller** repo, so it uses that repo's own
+`make` target (`bin/<mcp-name>`) and `scripts/deploy-zeus-mcp.sh`. `secrets: inherit`
+passes the caller's `PACKER_GOOGLE_CREDENTIALS`, `CI_SSH_KEY`, `CI_SSH_KNOWN_HOSTS`,
+and `SLACK_BOT_TOKEN`; no new secrets are required.
+
+### Input Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `mcp-name` | string | _(required)_ | Binary / symlink name on zeus (also the make target `bin/<name>`) |
+| `go-version` | string | `1.25.8` | Go toolchain version |
+| `zeus-keep-builds` | string | `5` | How many prior builds to retain on zeus |
+
 ## 🛠️ Migration from Webhook Service
 
 This repository replaces the existing webhook-based PR validation service. The migration provides:
