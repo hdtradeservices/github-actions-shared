@@ -140,6 +140,7 @@ and `SLACK_BOT_TOKEN`; no new secrets are required.
 | `mcp-name` | string | _(required)_ | Binary / symlink name on zeus (also the make target `bin/<name>`) |
 | `go-version` | string | `1.25.8` | Go toolchain version |
 | `zeus-keep-builds` | string | `5` | How many prior builds to retain on zeus |
+| `notify-channel` | string | `#release_notes` | Slack channel for hot-swap failure alerts. Empty disables the alert. |
 
 ## 🛠️ Migration from Webhook Service
 

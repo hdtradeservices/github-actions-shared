@@ -20,6 +20,14 @@ on:
         description: "How many prior builds to retain on zeus"
         type: string
         default: "5"
+      notify-channel:
+        description: "Slack channel for hot-swap failure alerts. Empty disables the alert."
+        type: string
+        # NOTIFICATION_CHANNEL is a per-environment (live/dev) GitHub Environment
+        # variable, and this job never declares `environment:`, so
+        # `vars.NOTIFICATION_CHANNEL` was always empty here (DOPS-362). Quoted
+        # because the value starts with '#', which YAML would read as a comment.
+        default: "#release_notes"
 
 concurrency:
   # Never let two deploys race the symlink flip on the same box. github.repository
@@ -105,10 +113,12 @@ jobs:
           scripts/deploy-zeus-mcp.sh "${MCP_NAME}" "bin/${MCP_NAME}" "${GIT_SHA}"
 
       - name: Notify failure
-        if: failure()
+        # An empty channel makes the action itself fail, masking the real failure
+        # with a second red step; skip instead.
+        if: failure() && inputs.notify-channel != ''
         uses: slackapi/slack-github-action@v1.27.0
         with:
-          channel-id: ${{ vars.NOTIFICATION_CHANNEL }}
+          channel-id: "${{ inputs.notify-channel }}"
           payload: |
             {
               "blocks": [
