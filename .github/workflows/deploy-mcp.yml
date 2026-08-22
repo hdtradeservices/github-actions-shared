@@ -87,15 +87,24 @@ jobs:
 
       # gcloud auto-registers a fresh OS Login key on every ssh/scp and never
       # removes them; the packer@ profile eventually exceeds OS Login's 32 KiB
-      # cap and every deploy fails with FAILED_PRECONDITION. Clear the accrued
-      # keys before deploying — the expiry flag above keeps new ones from piling
-      # back up. Runs as packer@ (authenticated in Configure gcloud), so it only
-      # touches that profile.
-      - name: Prune accrued OS Login SSH keys
+      # cap and every deploy fails with FAILED_PRECONDITION. Clear the dead keys
+      # before deploying — the expiry flag above keeps new ones from piling back
+      # up. Runs as packer@ (authenticated in Configure gcloud), so it only
+      # touches that profile, but all four MCP repos share it: pruning a key that
+      # has not expired yet kills a concurrent repo's in-flight scp with
+      # Permission denied (publickey) (DOPS-361).
+      - name: Prune expired OS Login SSH keys
         run: |
-          gcloud compute os-login ssh-keys list --format="value(value.fingerprint)" \
-            | while read -r fp; do
-                [ -n "$fp" ] && gcloud compute os-login ssh-keys remove --key="$fp" || true
+          now_usec=$(( $(date +%s) * 1000000 ))
+          gcloud compute os-login ssh-keys list \
+            --format="value[separator=' '](value.fingerprint,value.expirationTimeUsec)" \
+            | while read -r fp exp; do
+                [ -n "$fp" ] || continue
+                # Blank expiry = permanent key predating --ssh-key-expire-after:
+                # pure profile bloat, never an in-flight deploy's key.
+                if [ -z "$exp" ] || [ "$exp" -le "$now_usec" ]; then
+                  gcloud compute os-login ssh-keys remove --key="$fp" || true
+                fi
               done
 
       - name: Hot-swap onto zeus-live-buster
