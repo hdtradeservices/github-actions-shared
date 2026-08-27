@@ -95,15 +95,41 @@ jobs:
 
       # gcloud auto-registers a fresh OS Login key on every ssh/scp and never
       # removes them; the packer@ profile eventually exceeds OS Login's 32 KiB
-      # cap and every deploy fails with FAILED_PRECONDITION. Clear the accrued
-      # keys before deploying — the expiry flag above keeps new ones from piling
-      # back up. Runs as packer@ (authenticated in Configure gcloud), so it only
-      # touches that profile.
-      - name: Prune accrued OS Login SSH keys
+      # cap and every deploy fails with FAILED_PRECONDITION. Remove only keys
+      # whose expiry has already passed — the expiry flag above keeps new ones
+      # from piling back up. Runs as packer@ (authenticated in Configure
+      # gcloud), so it only touches that profile, but all four MCP repos share
+      # it: pruning a key that has not expired yet kills a concurrent repo's
+      # in-flight scp with Permission denied (publickey) (DOPS-361). Anything
+      # this cannot prove is expired is kept and announced, so a broken listing
+      # degrades to a loud no-op instead of wiping the profile.
+      - name: Prune expired OS Login SSH keys
         run: |
-          gcloud compute os-login ssh-keys list --format="value(value.fingerprint)" \
-            | while read -r fp; do
-                [ -n "$fp" ] && gcloud compute os-login ssh-keys remove --key="$fp" || true
+          now_usec=$(( $(date +%s) * 1000000 ))
+          # The default shell is `bash -e` with no pipefail, so a failed list
+          # inside a pipeline would leave the step green and prune nothing.
+          if ! keys=$(gcloud compute os-login ssh-keys list \
+            --format="value[separator=' '](value.fingerprint,value.expirationTimeUsec)"); then
+            echo "::warning::could not list OS Login keys; skipping prune"
+            keys=""
+          fi
+          printf '%s\n' "$keys" \
+            | while read -r fp exp; do
+                [ -n "$fp" ] || continue
+                case "$exp" in
+                  # gcloud renders a field it cannot resolve as an empty string,
+                  # so a blank expiry is either a permanent key or a projection
+                  # that broke. Deleting on that ambiguity would wipe every key
+                  # the day value.expirationTimeUsec stops resolving.
+                  "")
+                    echo "::warning::$fp has no expiry; keeping (remove it by hand if the profile nears the 32 KiB cap)" ;;
+                  *[!0-9]*)
+                    echo "::warning::$fp has an unparseable expiry ($exp); keeping" ;;
+                  *)
+                    if [ "$exp" -le "$now_usec" ]; then
+                      gcloud compute os-login ssh-keys remove --key="$fp" || true
+                    fi ;;
+                esac
               done
 
       - name: Hot-swap onto zeus-live-buster
